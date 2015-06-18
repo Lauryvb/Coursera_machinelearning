@@ -1,0 +1,142 @@
+---
+title: "Predicting exercise"
+author: "Laury van Bedaf"
+date: "4 juni 2015"
+output: html_document
+---
+```{r, echo = FALSE, results='hide', warning=FALSE}
+library(caret)
+library(corrplot)
+library(rattle)
+library(ggplot2)
+```
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively cheap. These types of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, the goal is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available on the website: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+
+Thus the main question is: can we use the data from the accelerometers to predict what  exercise the participant is performing?
+
+#Analysis
+
+I have set the seed so the same random numbers will the produced ever time. This is needed for reproducable results, because some of the operations are based on random procedures.
+```{r}
+set.seed(23939)
+
+```
+
+I started with loading in the data and dividing this into a training set and a pre-test set. I will use the pre-test set to validate the model and to decide what model I will use for the final testing set. 
+```{r, cache=TRUE}
+train = read.csv("pml-training.csv", header = TRUE, na.strings = c("", NA))
+intrain<-createDataPartition(y = train$classe, p = 0.80, list = FALSE)
+train = train[intrain,]
+pretest = train[-intrain,]
+
+```
+
+I noticed that there were several variables that only have a few datapoints. This would make a bad predictor. Therefore I started by excluding these variables. 
+```{r}
+nana = apply(train, 2, function(x) sum(is.na(x)))
+train= train[, nana<200]
+```
+
+The first 6 variables were variables like: who performed the exercise and the timestamp etc. Because we are trying to make an algorithm that can be used with quantified self to predict if an exercise is performed well, these variable are no good predictors and are therefore excluded from the model. 
+
+```{r, cache = TRUE}
+names(train[1:6])
+train = train[, -c(1:6)]
+pretest = pretest[, -c(1:6)]
+```
+This leaves us with with `r dim(train)[1]` datapoints and `r dim(train)[2]` possible predictors including the classes of exercises we want to predict. 
+ 
+Because I'm going to try classification algorithms like trees, and these are very robust to redundent information i'm not going to search for further correlations or consider pre-processing methodes like the PCA.
+
+I will begin with a simple tree model. One big advantage of a simpel treemodel is that is it easy to understand what the influence is of a predictor on the model.
+
+```{r, cache = TRUE}
+
+modelFit = train(classe~., method= 'rpart', data=train)
+fancyRpartPlot(modelFit$finalModel)
+model_tree = confusionMatrix(pretest$classe,predict(modelFit,newdata=pretest))
+model_tree
+```
+As you can see the overall accuracy (`r  model_tree$overall[1]`) is not so good. If you look more closely to the confusionmatrix you see that the model is unable to predict the D class at all. 
+
+Thus lets now try many more trees with random forest. Random Forests grows many classification trees. To classify a new object from an input vector, the input vector is run down each of the trees in the forest. Each tree gives a classification, and we say the tree "votes" for that class. The forest chooses the classification having the most votes (over all the trees in the forest).
+
+```{r, cache = TRUE}
+modelFit = train(classe~., method= 'rf', data=train)
+
+```
+
+```{r, cache = TRUE}
+print(modelFit)
+print(modelFit$finalModel)
+
+```
+
+Besides random forest I will also use a boosting algorithm. Random forest and boosting are in many famous contests the best performing algorithms. The downside of these algorithms is, that it is hard to uderstand how individual predictors contribute to the model. Therefore it is a black box. 
+
+```{r, cache = TRUE}
+modelFit_boost <- train( classe ~ ., method="gbm",data=train,verbose=FALSE)
+```
+
+```{r, cache = TRUE}
+print(modelFit_boost)
+
+```
+
+Below you see two confusionmatrices, one of the random forest and one of the boosting algorithms. 
+```{r, cache = TRUE}
+model_rf = confusionMatrix(pretest$classe,predict(modelFit,newdata=pretest))
+model_rf
+
+model_boost = confusionMatrix(pretest$classe,predict(modelFit_boost,newdata=pretest))
+model_boost
+
+```
+The accuracy of the random forest is `r model_rf$overall[1]` and the accuracy of the boosting algorithm is `r model_boost$overall[1]`.
+Based on the accuracy the random forest performs best. 
+
+##Random Forest
+
+In random forests, there is no need for cross-validation or a separate test set to get an unbiased estimate of the test set error. It is estimated internally, during the run, as follows:
+
+Each tree is constructed using a different bootstrap sample from the original data. About one-third of the cases are left out of the bootstrap sample and not used in the construction of the k'th tree.
+
+Put each case left out in the construction of the k'th tree down the k'th tree to get a classification. In this way, a test set classification is obtained for each case in about one-third of the trees. At the end of the run, take j to be the class that got most of the votes every time case n was oob. The proportion of times that j is not equal to the true class of n averaged over all cases is the oob error estimate. This has proven to be unbiased in many tests.
+
+In this case the resampling consisted of 25 bootstraps.
+
+To see what predictors were most important we use the function varImp
+```{r, cache=TRUE}
+varImp(modelFit)
+qplot(num_window,roll_belt, colour=classe, data=train)
+alldata = read.csv("pml-training.csv", header = TRUE, na.strings = c("", NA))
+qplot(num_window,X, colour=classe, data=alldata)
+
+```
+
+So it looks like the model heavily depends on num_window. And num window heavily depends on the moment when the exercise is done. What we want is to predict the exercise in the 'wild'. So we do not want our prediction to depend on things like the number of the window.
+Therefore we will run the analyses again but now without num_window
+
+```{r random_forest2, cache = TRUE}
+names(train)
+train = train[, -c(1)]
+pretest = pretest[, -c(1)]
+modelFit2 = train(classe~., method= 'rf', data=train)
+print(modelFit2)
+print(modelFit2$finalModel)
+model_rf = confusionMatrix(pretest$classe,predict(modelFit2,newdata=pretest))
+model_rf
+varImp(modelFit2)
+
+```
+
+The accuracy of this model is even better! It is `r model_rf$overall[1]`. And the out of sample error rate is close to zero! Therefore, I will stop looking at other models and at the different diagnostic methods. I performed this algorithm on the testing data set and predicted all 20 cases correct.
+
+To further understand what this algorithm is doing, I looked at the most important variables and plotted the first 5 in a pairs plot (see below). As you can see it is still hard to distinguish the different groups. This further strengthens the notion that many predictors are needed to differentiate between the different exercises. 
+```{r}
+imp_pre= data.frame(yaw_belt=train$yaw_belt, roll_belt=train$roll_belt, magnet_arm_z=train$magnet_arm_z, magnet_arm_y=train$magnet_arm_y, pitch_belt=train$pitch_belt, classe=train$classe)
+featurePlot(x=imp_pre[,-6], y=imp_pre$classe, plot='pairs', autokey=list(columns=5))
+```
+
+More information about random forest can be found here: http://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm#ooberr
